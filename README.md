@@ -12,7 +12,7 @@ Built and used for a real one-person studio migration of ~15 years of data: 136 
 |---|---|
 | **Full history import** | Clients + contacts, active and archived projects (with codes, rates, budgets), every time entry, every invoice with its payment date and the original Harvest PDF attached. No client emails are sent during import. |
 | **No double billing** | Time you already billed in Harvest is linked to its invoice, so "invoice project" never pulls it again. |
-| **Harvest-style numbering** | Projects `CLIENT-1000`, invoices named after their project: `ACME-1035`, then `ACME-1035b`, `c`… generated automatically. |
+| **Project-code numbering (optional)** | Keep your existing numbers, and optionally number new work by client code: projects `ACME-1000`, invoices named after their project (`ACME-1035`, then `ACME-1035b`, `c`…), generated automatically. |
 | **Harvest-style invoicing** | One click turns unbilled time into a draft invoice with **one line per task type**, notes listed under each, rounded to 15 minutes. |
 | **Menu bar timer (macOS)** | Week timesheet, start/stop/edit entries, add time manually, idle and sleep detection. |
 | **Browser tweaks** | Quarter-hour project totals, Edit/Delete on the Daily view, sidebar in your order, "Tasks" opens today's Daily view. |

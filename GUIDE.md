@@ -8,7 +8,7 @@ Phases 1–2 are the only part that is slow or tricky. Phases 3–4 are just run
 - [Phase 1: Get everything out of Harvest](#phase-1-get-everything-out-of-harvest)
 - [Phase 2: Install Invoice Ninja](#phase-2-install-invoice-ninja)
 - [Phase 3: Import your history](#phase-3-import-your-history)
-- [Phase 4: Numbering like Harvest](#phase-4-numbering-like-harvest)
+- [Phase 4: Project-code numbering (optional)](#phase-4-project-code-numbering-optional)
 - [Phase 5: Payments (Stripe)](#phase-5-payments-stripe)
 - [Phase 6: Email](#phase-6-email)
 - [Phase 7: Make it feel like Harvest](#phase-7-make-it-feel-like-harvest)
@@ -202,7 +202,7 @@ php import_invoices.php harvest_invoice_report.csv --pdfs=invoice_pdfs --only=AB
 php import_invoices.php harvest_invoice_report.csv --pdfs=invoice_pdfs --live
 ```
 For each invoice it:
-- keeps the Harvest number and issue date
+- keeps its Harvest invoice number and issue date
 - links it to the project whose code matches the invoice number (`ABC-1001b` links to `ABC-1001`)
 - records the payment on Harvest's payment date
 - cancels invoices that were **closed without payment**, so they show no balance and trigger no reminders
@@ -222,9 +222,13 @@ Without this step, Invoice Ninja's **Invoice project** pulls your **already-bill
 
 ---
 
-## Phase 4: Numbering like Harvest
+## Phase 4: Project-code numbering (optional)
 
-The goal: projects numbered `CLIENT-####`, and each invoice named after its project. The first invoice gets the bare code, `ACME-1035`, and later ones get `ACME-1035b`, `ACME-1035c`…
+Your imported projects and invoices keep whatever numbers they had in Harvest. This phase is about numbering **new** ones.
+
+Harvest itself numbers invoices with a simple counter, and project codes are whatever you type in. If that's how you worked, a counter in Invoice Ninja (**Settings → Generated Numbers**, for example `{$counter}` or `{$year}-{$counter}`) is all you need, so skip this phase.
+
+This phase is for a convention some people layer on top of Harvest: **project codes per client** (`ACME-1000`, `ACME-1001`…), with **each invoice named after its project**. The first invoice gets the bare code, `ACME-1035`, and follow-ups get `ACME-1035b`, `ACME-1035c`… That fits ongoing projects billed in installments.
 
 Invoice Ninja's number patterns can't use a project's number, so a cron job does it:
 1. **Settings → Generated Numbers:**

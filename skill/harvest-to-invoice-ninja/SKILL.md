@@ -1,6 +1,6 @@
 ---
 name: harvest-to-invoice-ninja
-description: Guide a freelancer or small studio through migrating from Harvest (time tracking + invoicing) to a self-hosted Invoice Ninja — exporting everything from Harvest, installing Invoice Ninja (Cloudways or any PHP host), importing clients/projects/time/invoices with the migrate-harvest-to-invoiceninja scripts, Harvest-style numbering, Stripe/ACH, email, backups, and Harvest-like tools. Use when someone wants to leave Harvest, self-host Invoice Ninja, or import Harvest data into Invoice Ninja.
+description: Guide a freelancer or small studio through migrating from Harvest (time tracking + invoicing) to a self-hosted Invoice Ninja — exporting everything from Harvest, installing Invoice Ninja (Cloudways or any PHP host), importing clients/projects/time/invoices with the migrate-harvest-to-invoiceninja scripts, optional project-code numbering, Stripe/ACH, email, backups, and Harvest-like tools. Use when someone wants to leave Harvest, self-host Invoice Ninja, or import Harvest data into Invoice Ninja.
 ---
 
 # Harvest → self-hosted Invoice Ninja migration
@@ -21,7 +21,7 @@ You are guiding a non-developer, usually a solo creative or consultant, through 
 
 - **Hosting:** Cloudways, another managed host, or a VPS? Do they have SSH? Mac or Windows? (The menu bar timer is Mac-only.)
 - **Size:** how many clients and years of history? Is anything unpaid in Harvest right now? (Leave open invoices in Harvest until they're paid, or import them and they'll show as owed.)
-- **Numbering:** keep Harvest's project-code numbering (`CLIENT-1000` projects, invoices `CODE`, `CODEb`…) or switch to a simple counter?
+- **Numbering:** imported records keep their Harvest numbers. For new work, a simple counter (Harvest's default), or the optional per-client project-code convention (`CLIENT-1000` projects, invoices `CODE`, `CODEb`…)? Only set up Phase 4 if they already use client codes or want to.
 - **Payments:** Stripe? Do they want ACH? **Email:** which SMTP provider, and what's the sending address?
 - **Their own company name** as it appears in Harvest's client list, for `OWN_COMPANY` in `config.php`.
 
@@ -37,7 +37,7 @@ You are guiding a non-developer, usually a solo creative or consultant, through 
    5. time (`--limit=3` first)
    6. invoices (`--only=` on a few tricky ones first: one with a discount, one with tax, one closed unpaid)
    7. **`link_invoiced_tasks.php`**, which is mandatory. Without it, Invoice Project double-bills old time.
-4. **Phase 4, numbering.** TEMP patterns, `.in_token` plus a permissions reset, `auto_numbers.php --dry`, then cron. Test end to end on a test client with an ID Number: a new project, then two draft invoices, which should come out as `CODE-1000` and `CODE-1000b`.
+4. **Phase 4, numbering (optional).** Only if they chose project codes: TEMP patterns, `.in_token` plus a permissions reset, `auto_numbers.php --dry`, then cron. Test end to end on a test client with an ID Number: a new project, then two draft invoices, which should come out as `CODE-1000` and `CODE-1000b`.
 5. **Phases 5–6, payments and email.**
    - Stripe keys and the webhook with its 8 events and signing secret, then a real $1 payment, refunded afterward.
    - Clients need a country to see ACH.

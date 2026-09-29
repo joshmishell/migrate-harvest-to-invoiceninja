@@ -1,6 +1,7 @@
 <?php
 /*
- * Keeps the Harvest numbering scheme in Invoice Ninja. Runs every minute from cron.
+ * Optional project-code numbering (a per-client code convention, not something Harvest does itself).
+ * Runs every minute from cron.
  *
  * PROJECTS  numbered TEMP-...  ->  next code for that client, e.g. ACME-1035
  *           (prefix = the client's "ID Number" field, e.g. ACME; if that's empty,
