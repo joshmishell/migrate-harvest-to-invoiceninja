@@ -1,0 +1,22 @@
+# your settings and secrets
+scripts/config.php
+scripts/.in_token
+scripts/.rclone.conf
+.in_token
+.env
+
+# your data — never commit client/financial data
+*.csv
+*.zip
+*.pdf
+*.sql
+*.sql.gz
+*.tar.gz
+harvest_export/
+invoice_pdfs/
+backups/
+chromium/
+bin/
+*_done.txt
+*.log
+.auto_numbers_warned

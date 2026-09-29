@@ -1,0 +1,394 @@
+#!/bin/bash
+# <xbar.title>Invoice Ninja timer</xbar.title>
+# <xbar.version>2.1</xbar.version>
+# <xbar.author>migrate-harvest-to-invoiceninja</xbar.author>
+# <xbar.desc>Harvest-style week timesheet + timer for self-hosted Invoice Ninja.</xbar.desc>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+#
+# Setup (once), in Terminal:
+#   security add-generic-password -s invoiceninja-swiftbar -a "$USER" -w 'YOUR_API_TOKEN'
+#
+# Each entry is an Invoice Ninja task on a project, described "Task Type — notes",
+# which the "Invoice unbilled time" browser button groups into one line per task type.
+
+exec /usr/bin/osascript -l JavaScript - "$0" "$@" <<'JXA'
+ObjC.import('Foundation');
+
+const BASE  = 'https://billing.example.com';   // <-- your Invoice Ninja address
+const TYPES = ['Production Design', 'Creative', 'Web Development', 'Client Meeting', 'Project Management',
+               'Art Direction', 'Concepting', 'Copywriting', 'Photography', 'Research', 'Video Development', 'Admin'];
+const NON_BILLABLE = ['Admin'];
+const CACHE_MIN = 10;               // project list refresh
+const IDLE_MIN  = 10;               // ask about idle time after this many minutes away (0 = off)
+const MONO = 'font=SFMono-Regular size=13';
+const GRAY = 'color=#8E8E93';
+
+const app = Application.currentApplication();
+app.includeStandardAdditions = true;
+const cacheDir = $.NSHomeDirectory().js + '/Library/Caches/invoiceninja-swiftbar';
+
+// ---------------- plumbing ----------------
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const sh  = cmd => app.doShellScript(cmd);
+let TOKEN = null;
+function token() {
+  if (TOKEN === null) { try { TOKEN = sh('security find-generic-password -s invoiceninja-swiftbar -w'); } catch (e) { TOKEN = ''; } }
+  return TOKEN;
+}
+function api(method, path, body) {
+  let cmd = 'curl -sS --max-time 20 -X ' + method + ' ' + shq(BASE + '/api/v1' + path) +
+    ' -H ' + shq('X-API-TOKEN: ' + token()) + ' -H "X-Requested-With: XMLHttpRequest" -H "Accept: application/json"' +
+    ' -H "Content-Type: application/json" -w "\\n%{http_code}"';
+  if (body) cmd += ' --data-binary ' + shq(JSON.stringify(body));
+  const out = sh(cmd).split(/\r\n|\r|\n/);
+  const code = +out.pop(); const text = out.join('\n');
+  if (code < 200 || code >= 300) throw new Error('HTTP ' + code + ' on ' + path);
+  return text ? JSON.parse(text) : {};
+}
+function readFile(p) { const s = $.NSString.stringWithContentsOfFileEncodingError(p, $.NSUTF8StringEncoding, null); return s.isNil() ? null : s.js; }
+function writeFile(p, s) { sh('mkdir -p ' + shq(cacheDir)); $(s).writeToFileAtomicallyEncodingError(p, true, $.NSUTF8StringEncoding, null); }
+function state(patch) {
+  const f = cacheDir + '/state.json'; let s = {};
+  try { s = JSON.parse(readFile(f) || '{}'); } catch (e) {}
+  if (patch) { Object.assign(s, patch); writeFile(f, JSON.stringify(s)); }
+  return s;
+}
+const now = () => Math.floor(Date.now() / 1000);
+
+// ---------------- dates ----------------
+const DAY = 86400000;
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function weekStart(offset) { const t = startOfDay(new Date()); const dow = (t.getDay() + 6) % 7; return new Date(t.getTime() - dow * DAY + (offset || 0) * 7 * DAY); }
+const dayKey = d => { const x = new Date(d); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dayLabel = d => DOW[d.getDay()] + ' ' + MON[d.getMonth()] + ' ' + d.getDate();
+const fmt = s => { s = Math.max(0, Math.round(s / 60) * 60); return Math.floor(s / 3600) + ':' + String(Math.floor(s % 3600 / 60)).padStart(2, '0'); };
+function parseDuration(txt) {                      // "1:30", "1.5", "90m", "45" (minutes if > 12)
+  txt = String(txt).trim().toLowerCase();
+  let m;
+  if ((m = txt.match(/^(\d+):(\d{1,2})$/))) return (+m[1]) * 3600 + (+m[2]) * 60;
+  if ((m = txt.match(/^(\d+(?:\.\d+)?)\s*h?$/))) { const v = +m[1]; return v > 12 ? v * 60 : v * 3600; }
+  if ((m = txt.match(/^(\d+)\s*m(in)?$/))) return (+m[1]) * 60;
+  return null;
+}
+
+// ---------------- data ----------------
+function projects(force) {
+  const f = cacheDir + '/projects.json'; const cached = readFile(f);
+  if (cached && !force) { const c = JSON.parse(cached); if (now() - c.at < CACHE_MIN * 60) return c.list; }
+  const clients = {};
+  api('GET', '/clients?per_page=500&status=active').data.forEach(c => clients[c.id] = { name: c.display_name || c.name, rate: +(c.settings && c.settings.default_task_rate) || 0 });
+  const list = api('GET', '/projects?per_page=500&status=active').data.filter(p => clients[p.client_id])
+    .map(p => ({ id: p.id, client_id: p.client_id, client: clients[p.client_id].name, number: p.number || '', name: p.name, rate: +p.task_rate || clients[p.client_id].rate }))
+    .sort((a, b) => (a.client + a.number).localeCompare(b.client + b.number));
+  writeFile(f, JSON.stringify({ at: now(), list }));
+  return list;
+}
+function tasks(count) { return api('GET', '/tasks?per_page=' + (count || 100) + '&status=active,archived&sort=updated_at|desc').data.filter(t => !t.is_deleted); }
+const logOf = t => { try { return JSON.parse(t.time_log || '[]'); } catch (e) { return []; } };
+const openIdx = t => { const l = logOf(t); for (let i = l.length - 1; i >= 0; i--) if (l[i][0] && !l[i][1]) return i; return -1; };
+function split(desc) {
+  const d = String(desc || '').replace(/<[^>]+>/g, '').replace(/\[Invoiced in Harvest\]/g, '').trim();
+  const i = d.indexOf(' — ');
+  if (i > 0 && TYPES.indexOf(d.slice(0, i)) >= 0) return { type: d.slice(0, i), notes: d.slice(i + 3) };
+  if (TYPES.indexOf(d) >= 0) return { type: d, notes: '' };
+  return { type: '', notes: d };
+}
+const joinDesc = (type, notes) => (type || 'Services') + (notes ? ' — ' + notes : '');
+
+// one timesheet row per task per day, like Harvest
+function rowsForWeek(ts, ws) {
+  const we = ws.getTime() + 7 * DAY; const rows = [];
+  ts.forEach(t => {
+    const byDay = {};
+    logOf(t).forEach((e, i) => {
+      const ms = e[0] * 1000; if (ms < ws.getTime() || ms >= we) return;
+      const k = dayKey(ms);
+      (byDay[k] = byDay[k] || { secs: 0, running: false, idx: [] });
+      byDay[k].secs += (e[1] || now()) - e[0]; byDay[k].idx.push(i);
+      if (!e[1]) byDay[k].running = true;
+    });
+    Object.keys(byDay).forEach(k => rows.push(Object.assign({ task: t, day: k }, byDay[k])));
+  });
+  return rows.sort((a, b) => a.task.id < b.task.id ? -1 : 1);
+}
+
+// ---------------- dialogs ----------------
+function front() { app.activate(); }
+function chooseType(current, title) {
+  front();
+  const r = app.chooseFromList(TYPES, { withTitle: title || 'Task type', withPrompt: 'Task type:', defaultItems: [current && TYPES.indexOf(current) >= 0 ? current : TYPES[0]] });
+  return r ? r[0] : null;
+}
+function askText(prompt, title, def) {
+  front();
+  try { return app.displayDialog(prompt, { withTitle: title, defaultAnswer: def || '', buttons: ['Cancel', 'OK'], defaultButton: 'OK' }).textReturned.trim(); }
+  catch (e) { return null; }
+}
+function askDuration(def) {
+  for (;;) {
+    const t = askText('Time (e.g. 1:30, 1.5, 45m):', 'Time', def || '');
+    if (t === null) return null;
+    const s = parseDuration(t); if (s !== null && s > 0) return s;
+    front(); app.displayAlert('Couldn\'t read "' + t + '" as a time.');
+  }
+}
+
+// ---------------- actions ----------------
+function save(t) { return api('PUT', '/tasks/' + t.id, t).data; }
+function stopTask(t) { const l = logOf(t); const i = openIdx(t); if (i < 0) return; l[i][1] = now(); t.time_log = JSON.stringify(l); save(t); }
+function stopAll() { tasks(40).forEach(t => { if (!t.invoice_id && openIdx(t) >= 0) stopTask(t); }); }
+function guardInvoiced(t) { if (!t.invoice_id) return false; front(); app.displayAlert('This time is already invoiced, so it can\'t be changed.'); return true; }
+
+function newEntry(projectId, timer) {
+  const p = projects().find(x => x.id === projectId) || projects(true).find(x => x.id === projectId);
+  if (!p) throw new Error('Project not found — try Refresh projects');
+  const label = (p.number ? p.number + ' · ' : '') + p.name;
+  const type = chooseType(null, label); if (!type) return;
+  const notes = askText('Notes (optional):', type + ' · ' + label, ''); if (notes === null) return;
+  const billable = NON_BILLABLE.indexOf(type) < 0;
+  let entry;
+  if (timer) { stopAll(); entry = [now(), 0, notes, billable]; }
+  else {
+    const secs = askDuration(''); if (!secs) return;
+    const ws = weekStart(state().week || 0);
+    const days = []; for (let i = 0; i < 7; i++) days.push(new Date(ws.getTime() + i * DAY));
+    const labels = days.map(dayLabel); const todayLbl = dayLabel(startOfDay(new Date()));
+    front();
+    const pick = app.chooseFromList(labels, { withTitle: 'Day', withPrompt: 'Which day?', defaultItems: [labels.indexOf(todayLbl) >= 0 ? todayLbl : labels[0]] });
+    if (!pick) return;
+    const d = days[labels.indexOf(pick[0])]; const start = Math.floor(d.getTime() / 1000) + 9 * 3600;
+    entry = [start, start + secs, notes, billable];
+  }
+  api('POST', '/tasks', { client_id: p.client_id, project_id: p.id, rate: p.rate, description: joinDesc(type, notes), time_log: JSON.stringify([entry]) });
+}
+function startTask(id) {                            // Harvest's "▶" on an existing row: continue it today
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  stopAll();
+  const l = logOf(t); const last = l[l.length - 1] || [];
+  l.push([now(), 0, last[2] || '', last.length > 3 ? last[3] : true]);
+  t.time_log = JSON.stringify(l); save(t);
+}
+function editNotes(id) {
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  const d = split(t.description);
+  const notes = askText('Notes:', 'Edit notes', d.notes); if (notes === null) return;
+  t.description = joinDesc(d.type, notes);
+  t.time_log = JSON.stringify(logOf(t).map(e => { e[2] = notes; return e; }));
+  save(t);
+}
+function editType(id) {
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  const d = split(t.description);
+  const type = chooseType(d.type, 'Change task type'); if (!type) return;
+  t.description = joinDesc(type, d.notes);
+  const billable = NON_BILLABLE.indexOf(type) < 0;
+  t.time_log = JSON.stringify(logOf(t).map(e => { e[3] = billable; return e; }));
+  save(t);
+}
+function editTime(id, day) {                        // set that day's total, like typing into Harvest's hours box
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  const l = logOf(t); const idx = []; let cur = 0;
+  l.forEach((e, i) => { if (dayKey(e[0] * 1000) === day) { idx.push(i); cur += (e[1] || now()) - e[0]; } });
+  if (!idx.length) return;
+  if (idx.some(i => !l[i][1])) { front(); app.displayAlert('Stop the timer before editing its time.'); return; }
+  const secs = askDuration(fmt(cur)); if (!secs) return;
+  const first = l[idx[0]]; const keep = l.filter((e, i) => idx.indexOf(i) < 0);
+  keep.push([first[0], first[0] + secs, first[2] || '', first.length > 3 ? first[3] : true]);
+  keep.sort((a, b) => a[0] - b[0]);
+  t.time_log = JSON.stringify(keep); save(t);
+}
+function moveProject(id) {
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  const ps = projects(); const labels = ps.map(p => p.client + ' — ' + (p.number ? p.number + ' ' : '') + p.name);
+  front();
+  const pick = app.chooseFromList(labels, { withTitle: 'Move to project', withPrompt: 'Project:' }); if (!pick) return;
+  const p = ps[labels.indexOf(pick[0])];
+  t.client_id = p.client_id; t.project_id = p.id; t.rate = p.rate; save(t);
+}
+function deleteDay(id, day) {
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  front();
+  try { app.displayDialog('Delete this entry (' + day + ')?', { withTitle: 'Delete', buttons: ['Cancel', 'Delete'], defaultButton: 'Cancel', withIcon: 'caution' }); } catch (e) { return; }
+  const keep = logOf(t).filter(e => dayKey(e[0] * 1000) !== day);
+  if (keep.length) { t.time_log = JSON.stringify(keep); save(t); }
+  else api('POST', '/tasks/bulk', { action: 'delete', ids: [t.id] });
+}
+
+
+// ---------------- idle detection (Harvest/Toggl style) ----------------
+function idleSeconds() {
+  try { return +sh("ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'") || 0; } catch (e) { return 0; }
+}
+// Called on every menu refresh. Notes when you went idle (or the Mac slept) while a timer ran,
+// and once you're back, pops the question in a separate process so the menu isn't blocked.
+function checkIdle(self, running) {
+  if (!IDLE_MIN) return;
+  const st = state(); const t = now(); const idle = idleSeconds();
+  const patch = { lastRun: t };
+  if (!running) { if (st.idleSince || st.idleTask) Object.assign(patch, { idleSince: null, idleTask: null }); state(patch); return; }
+  let since = st.idleSince || null;
+  if (st.lastRun && t - st.lastRun > IDLE_MIN * 60) since = since || st.lastRun;          // Mac was asleep
+  if (idle >= IDLE_MIN * 60) since = Math.min(since || Infinity, t - idle);                  // away from the keyboard
+  if (since) { patch.idleSince = since; patch.idleTask = running.id; }
+  state(patch);
+  const back = idle < 30;
+  if (since && back && (!st.idlePrompting || t - st.idlePrompting > 7200) && t - since >= IDLE_MIN * 60) {
+    state({ idlePrompting: t });
+    sh('nohup ' + shq(self) + ' idle >/dev/null 2>&1 &');
+  }
+}
+function idlePrompt() {
+  const st = state();
+  try {
+    if (!st.idleSince || !st.idleTask) return;
+    const t = api('GET', '/tasks/' + st.idleTask).data; const i = openIdx(t);
+    if (i < 0) return;                                             // timer already stopped
+    const log = logOf(t); const since = Math.max(st.idleSince, log[i][0]);
+    const mins = Math.round((now() - since) / 60); if (mins < IDLE_MIN) return;
+    const at = new Date(since * 1000); const hh = at.getHours() % 12 || 12, mm = String(at.getMinutes()).padStart(2, '0');
+    const d = split(t.description);
+    front();
+    let r;
+    try {
+      r = app.displayDialog('You\'ve been idle since ' + hh + ':' + mm + (at.getHours() < 12 ? ' AM' : ' PM') + ' (' + fmt(mins * 60) + ').\n\n' +
+        'Timer running: ' + (d.type || 'Services') + (d.notes ? ' — ' + d.notes : ''),
+        { withTitle: 'Idle time', buttons: ['Keep idle time', 'Discard & stop', 'Discard & continue'], defaultButton: 'Discard & continue', withIcon: 'caution', givingUpAfter: 3600 }).buttonReturned;
+    } catch (e) { r = 'Keep idle time'; }
+    if (r === 'Discard & continue') { log[i][1] = since; log.push([now(), 0, log[i][2] || '', log[i].length > 3 ? log[i][3] : true]); }
+    else if (r === 'Discard & stop') { log[i][1] = since; }
+    else return;
+    t.time_log = JSON.stringify(log); save(t);
+  } finally { state({ idleSince: null, idleTask: null, idlePrompting: null, lastRun: now() }); }
+}
+
+// ---------------- menu ----------------
+function menu(self) {
+  const act = (args, extra) => ' | bash="' + self + '" ' + args.map((a, i) => 'param' + (i + 1) + '=' + a).join(' ') + ' terminal=false refresh=true' + (extra ? ' ' + extra : '');
+  const clean = s => String(s || '').replace(/\|/g, '/').replace(/[\r\n]+/g, ' ').trim();
+  const cut = (s, n) => { s = clean(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+
+  if (!token()) return 'Timer | sfimage=timer\n---\nAdd your API token in Terminal: | ' + GRAY + '\nsecurity add-generic-password -s invoiceninja-swiftbar -a "$USER" -w \'TOKEN\' | font=Menlo size=11';
+  const offset = state().week || 0;
+  let ts, projs;
+  try { ts = tasks(offset ? 300 : 100); projs = projects(); }
+  catch (e) { return '⚠ | sfimage=exclamationmark.triangle\n---\nCan\'t reach Invoice Ninja: ' + clean(e.message) + '\nOpen Invoice Ninja | href=' + BASE; }
+
+  const byProj = {}; projs.forEach(p => byProj[p.id] = p);
+  const ws = weekStart(offset); const todayK = dayKey(Date.now());
+  const rows = rowsForWeek(ts, ws);
+  const runningTask = ts.find(t => openIdx(t) >= 0);
+  try { checkIdle(self, runningTask); } catch (e) {}
+  const totalFor = k => rows.filter(r => r.day === k).reduce((s, r) => s + r.secs, 0);
+  const weekTotal = rows.reduce((s, r) => s + r.secs, 0);
+  const billableWeek = rows.filter(r => { const l = logOf(r.task); return r.idx.some(i => l[i][3] !== false); }).reduce((s, r) => s + r.secs, 0);
+  const projLabel = t => { const p = byProj[t.project_id]; return p ? (p.number || p.name) : 'No project'; };
+  const projName  = t => { const p = byProj[t.project_id]; return p ? p.name + ' · ' + p.client : ''; };
+
+  const out = [];
+  // title
+  if (runningTask) { const r = rows.find(x => x.task === runningTask && x.running); out.push((r ? fmt(r.secs) : '') + '  ' + cut(projLabel(runningTask), 18) + ' | sfimage=timer color=#34C759'); }
+  else out.push((todayK >= dayKey(ws) ? fmt(totalFor(todayK)) : '') + ' | sfimage=timer');
+  out.push('---');
+
+  // week header + day strip (Harvest's Mon–Sun tabs)
+  const we = new Date(ws.getTime() + 6 * DAY);
+  out.push('Week of ' + MON[ws.getMonth()] + ' ' + ws.getDate() + ' – ' + MON[we.getMonth()] + ' ' + we.getDate() + '    ' + fmt(weekTotal) + ' | font=HelveticaNeue-Bold size=14');
+  let strip = '';
+  for (let i = 0; i < 7; i++) { const d = new Date(ws.getTime() + i * DAY); const k = dayKey(d); const s = totalFor(k); strip += (k === todayK ? '•' : ' ') + DOW[d.getDay()].slice(0, 2) + ' ' + (s ? fmt(s) : ' –  ') + '  '; }
+  out.push(strip.trimEnd() + ' | ' + MONO + ' ' + GRAY);
+  out.push('Billable ' + fmt(billableWeek) + '  ·  Non-billable ' + fmt(weekTotal - billableWeek) + ' | size=11 ' + GRAY);
+  out.push('---');
+
+  // one row: status icon, time, project · type — notes, with an actions submenu
+  const row = (r, depth) => {
+    const pre = '--'.repeat(depth); const t = r.task; const d = split(t.description); const locked = !!t.invoice_id;
+    const icon = r.running ? 'sfimage=stop.circle.fill color=#34C759' : locked ? 'sfimage=lock.fill' : 'sfimage=play.circle';
+    out.push(pre + fmt(r.secs).padStart(5, ' ') + '   ' + cut(projLabel(t), 14).padEnd(14, ' ') + '  ' + cut((d.type || 'Services') + (d.notes ? ' — ' + d.notes : ''), 44) +
+             ' | ' + MONO + ' ' + icon + ' tooltip="' + clean(projName(t) + (d.notes ? ' — ' + d.notes : '')).replace(/"/g, "'") + '"');
+    const sub = pre + '--';
+    out.push(sub + cut(projName(t), 60) + ' | ' + GRAY);
+    if (d.notes) out.push(sub + cut(d.notes, 80) + ' | ' + GRAY + ' size=12');
+    out.push(sub + '---');
+    if (locked) { out.push(sub + 'Invoiced — locked | sfimage=lock.fill ' + GRAY); }
+    else {
+      if (r.running) out.push(sub + 'Stop timer' + act(['stop', t.id], 'sfimage=stop.fill'));
+      else out.push(sub + 'Start timer' + act(['start', t.id], 'sfimage=play.fill'));
+      out.push(sub + 'Edit notes…' + act(['notes', t.id], 'sfimage=square.and.pencil'));
+      out.push(sub + 'Edit time…' + act(['time', t.id, r.day], 'sfimage=clock'));
+      out.push(sub + 'Change task type…' + act(['type', t.id], 'sfimage=tag'));
+      out.push(sub + 'Move to project…' + act(['move', t.id], 'sfimage=folder'));
+      out.push(sub + '---');
+      out.push(sub + 'Delete…' + act(['delete', t.id, r.day], 'sfimage=trash'));
+    }
+    out.push(sub + 'Open in Invoice Ninja | href=' + BASE + '/tasks/' + t.id + '/edit sfimage=safari');
+  };
+
+  // today first, expanded; other days of the week as submenus
+  const days = []; for (let i = 0; i < 7; i++) days.push(new Date(ws.getTime() + i * DAY));
+  const todayInWeek = days.some(d => dayKey(d) === todayK);
+  if (todayInWeek) {
+    const tr = rows.filter(r => r.day === todayK);
+    out.push('Today · ' + dayLabel(new Date()) + '    ' + fmt(totalFor(todayK)) + ' | font=HelveticaNeue-Bold size=13');
+    if (tr.length) tr.forEach(r => row(r, 0)); else out.push('No time yet today | ' + GRAY);
+    out.push('---');
+  }
+  days.slice().reverse().forEach(d => {
+    const k = dayKey(d); if (k === todayK) return;
+    const dr = rows.filter(r => r.day === k); if (!dr.length) return;
+    out.push(dayLabel(d) + '    ' + fmt(totalFor(k)) + ' | sfimage=calendar');
+    dr.forEach(r => row(r, 1));
+  });
+  if (!rows.length && !todayInWeek) out.push('No time this week | ' + GRAY);
+
+  // new entries (Harvest's "+")
+  out.push('---');
+  const projMenu = (label, cmd, icon) => {
+    out.push(label + ' | sfimage=' + icon);
+    let last = null;
+    projs.forEach(p => {
+      if (p.client !== last) { out.push('--' + cut(p.client, 50)); last = p.client; }
+      out.push('----' + cut((p.number ? p.number + '  ' : '') + p.name, 60) + act([cmd, p.id]));
+    });
+  };
+  projMenu('Start new timer', 'new', 'plus.circle.fill');
+  projMenu('Add time manually', 'add', 'plus.circle');
+
+  // week navigation
+  out.push('---');
+  out.push('Previous week' + act(['week', offset - 1], 'sfimage=chevron.left'));
+  if (offset !== 0) out.push('This week' + act(['week', 0], 'sfimage=calendar.circle'));
+  if (offset < 0) out.push('Next week' + act(['week', offset + 1], 'sfimage=chevron.right'));
+  out.push('---');
+  out.push('Open Invoice Ninja | href=' + BASE + '/tasks sfimage=safari');
+  out.push('Refresh projects' + act(['refresh'], 'sfimage=arrow.clockwise'));
+  return out.filter((l, i) => !(l === '---' && out[i - 1] === '---')).join('\n');
+}
+
+function run(argv) {
+  const self = argv[0], cmd = argv[1], a = argv[2], b = argv[3];
+  try {
+    switch (cmd) {
+      case 'new':     newEntry(a, true);  return '';
+      case 'add':     newEntry(a, false); return '';
+      case 'start':   startTask(a);       return '';
+      case 'stop':    stopTask(api('GET', '/tasks/' + a).data); return '';
+      case 'notes':   editNotes(a);       return '';
+      case 'time':    editTime(a, b);     return '';
+      case 'type':    editType(a);        return '';
+      case 'move':    moveProject(a);     return '';
+      case 'delete':  deleteDay(a, b);    return '';
+      case 'week':    state({ week: +a || 0 }); return '';
+      case 'refresh': projects(true);     return '';
+      case 'idle':    idlePrompt();       return '';
+      default:        return menu(self);
+    }
+  } catch (e) {
+    if (cmd) { front(); app.displayAlert('Invoice Ninja timer', { message: e.message }); return ''; }
+    return '⚠ | sfimage=exclamationmark.triangle\n---\n' + e.message;
+  }
+}
+JXA
