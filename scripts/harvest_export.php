@@ -1,5 +1,6 @@
 <?php
 /*
+ * harvest_export.php  v1.0
  * Full Harvest account export through the Harvest API v2 — everything the CSV exports leave out:
  * invoice LINE ITEMS, every individual PAYMENT (date, amount, method, notes), invoice email history,
  * estimates (+ their line items and PDFs), expenses (+ receipt files), rates, budgets, users, settings.

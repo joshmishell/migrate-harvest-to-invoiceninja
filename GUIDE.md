@@ -222,6 +222,13 @@ Without this step, Invoice Ninja's **Invoice project** pulls your **already-bill
 
 ---
 
+### Real project dates
+The API can't set created dates, so every imported project shows the import day. `set_project_dates.php` fixes that in the database: Harvest's own created date (from `harvest_export/<date>/projects.json`), otherwise the project's first time entry or first invoice. It only moves dates earlier, and a live run writes an undo file first. Take a server backup before running it live.
+```bash
+php set_project_dates.php --harvest=harvest_export/2026-10-02/projects.json          # dry run
+php set_project_dates.php --harvest=harvest_export/2026-10-02/projects.json --live   # apply
+```
+
 ## Phase 4: Project-code numbering (optional)
 
 Your imported projects and invoices keep whatever numbers they had in Harvest. This phase is about numbering **new** ones.
@@ -303,11 +310,23 @@ How it behaves:
 
 ### Browser tools (`tools/invoiceninja-tools.user.js`)
 Install [Tampermonkey](https://www.tampermonkey.net). In Chrome, also turn on **Allow User Scripts** under the extension's details. Create a new script, paste the file in, change the `@match` line to your address, and save. It asks for your API token once. It adds:
-- **Invoice unbilled time** (bottom-right of a project page): one line per task type with the notes listed underneath, each entry rounded up to 15 minutes. The time is marked as billed and a draft opens. **Release tracked time** on a draft invoice undoes it.
+- **Invoice unbilled time** (bottom-right of a project page): one line per task type with the notes listed underneath, each entry in 15-minute steps (up to the next quarter hour, or down when 5 minutes or less past one; under 5 minutes bills 0:15 — change `roundEntry` if your contract says otherwise). With project-code numbering on, the draft is numbered from the project (`ACME-1035`, then `b`, `c`…). The time is marked as billed and a draft opens. **Release tracked time** on a draft invoice undoes it.
 - Project hours to the quarter hour on the Projects list.
 - **Edit** and **Delete** on each row of the Tasks Daily view.
 - Sidebar in your order, set in `SIDEBAR_ORDER`, and **Tasks** opens today's Daily view.
-- A next-number hint under **Project Number**.
+- **Project numbers:** on New Project, Client moves above Name and a Project Number field fills in the client's next code as soon as you pick the client; Edit Project gets the same hint. Both have a **See all projects** popup (sortable) and block duplicate numbers. Tampermonkey will ask to allow `unsafeWindow`; that's how the number is saved with the project.
+- **Tasks pages** show "Client · Project" with the project clickable.
+- **To-do list** (sidebar **To-do**): see below.
+
+### To-do list
+A prioritized list of what has to be done, kept as Invoice Ninja tasks so it's backed up with everything else.
+1. **Settings → Custom Fields → Tasks:** field 1 **Due** (type *Date*), field 2 **To-do rank** (type *Single line text*).
+2. Open **To-do** in the sidebar. Add to-dos with a project, type and due date; the first line is the title, anything below it notes.
+3. Drag ⋮⋮ to set priority (drag a project header to move the whole project); **Focus** shows one list across projects.
+4. ▶ starts a timer as a normal time entry on that project, so the to-do itself never gets locked to an invoice. The stop sign marks it *waiting on client*; the checkbox crosses it out until **Clear completed**; the trash can moves it to a Trash you can restore from.
+
+### Morning email (`scripts/todo_digest.php`)
+An 8:30am weekday email with to-dos overdue / due today / this week / up next, invoices outstanding, overdue and paid since the last email, unsent drafts and unbilled time. It sends through the SMTP account in Invoice Ninja's `.env`. Set `DIGEST_TO` in `config.php`, check it with `php todo_digest.php --preview`, send a test with `--now`, then add the cron line from the top of the file (every 5 minutes; the script sends once a day at 8:30 in your `TIMEZONE`).
 
 ### Menu bar timer (`tools/invoiceninja-timer.10s.sh`, macOS)
 1. Install [SwiftBar](https://swiftbar.app).
@@ -318,7 +337,7 @@ Install [Tampermonkey](https://www.tampermonkey.net). In Chrome, also turn on **
 3. Set `BASE` at the top of the file to your address, and edit `TYPES` to your task types.
 4. Drop the file in SwiftBar's plugins folder and run `chmod +x` on it.
 
-It gives you a week timesheet with daily totals, start/stop, editing of notes, time, type and project, deleting entries, adding time manually, and an idle/sleep prompt after 10 minutes (`IDLE_MIN`). Time saved as "Type — notes" is grouped by the **Invoice unbilled time** button.
+It gives you a week timesheet with daily totals, start/stop (click the running entry to stop it), editing of notes, time, type and project, deleting entries, adding time manually (`1:30`, `1.5`, `.25`, `45`, `90m`), a solid green pill in the menu bar while timing, and an idle/sleep prompt after 10 minutes (`IDLE_MIN`). If the pill doesn't appear, run `./invoiceninja-timer.10s.sh pilltest` in Terminal; it says which drawing step failed. Time saved as "Type — notes" is grouped by the **Invoice unbilled time** button.
 
 **On a phone,** open your billing address in Safari, use **Share → Add to Home Screen**, and use the web app's timer.
 

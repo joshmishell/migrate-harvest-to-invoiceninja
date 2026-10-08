@@ -1,5 +1,7 @@
 <?php
 /*
+ * auto_numbers.php  v1.1  (counts deleted invoices when choosing the next letter)
+ *
  * Optional project-code numbering (a per-client code convention, not something Harvest does itself).
  * Runs every minute from cron.
  *
@@ -107,7 +109,7 @@ foreach ($tempInvoices as $inv) {
     if (is_temp($code)) { logm("  invoice {$inv['number']} waits: its project has no code yet"); continue; }
 
     // existing invoices for this project code: CODE, CODEa, CODEb ...
-    [$c, $j] = api('GET', '/invoices?per_page=500&status=active,archived&filter=' . urlencode($code));
+    [$c, $j] = api('GET', '/invoices?per_page=500&status=active,archived,deleted&filter=' . urlencode($code));
     $used = [];
     foreach ($j['data'] ?? [] as $x)
         if (preg_match('/^' . preg_quote($code, '/') . '([a-z]*)$/i', $x['number'], $m)) $used[strtolower($m[1])] = true;

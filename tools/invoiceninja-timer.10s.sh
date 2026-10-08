@@ -1,6 +1,6 @@
 #!/bin/bash
 # <xbar.title>Invoice Ninja timer</xbar.title>
-# <xbar.version>2.1</xbar.version>
+# <xbar.version>2.8</xbar.version>
 # <xbar.author>migrate-harvest-to-invoiceninja</xbar.author>
 # <xbar.desc>Harvest-style week timesheet + timer for self-hosted Invoice Ninja.</xbar.desc>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -15,8 +15,9 @@
 
 exec /usr/bin/osascript -l JavaScript - "$0" "$@" <<'JXA'
 ObjC.import('Foundation');
+ObjC.import('AppKit');
 
-const BASE  = 'https://billing.example.com';   // <-- your Invoice Ninja address
+const BASE  = 'https://billing.example.com';
 const TYPES = ['Production Design', 'Creative', 'Web Development', 'Client Meeting', 'Project Management',
                'Art Direction', 'Concepting', 'Copywriting', 'Photography', 'Research', 'Video Development', 'Admin'];
 const NON_BILLABLE = ['Admin'];
@@ -44,7 +45,16 @@ function api(method, path, body) {
   if (body) cmd += ' --data-binary ' + shq(JSON.stringify(body));
   const out = sh(cmd).split(/\r\n|\r|\n/);
   const code = +out.pop(); const text = out.join('\n');
-  if (code < 200 || code >= 300) throw new Error('HTTP ' + code + ' on ' + path);
+  if (code < 200 || code >= 300) {
+    let why = '';
+    try {
+      const j = JSON.parse(text);
+      const errs = j.errors ? Object.keys(j.errors).map(k => k + ': ' + [].concat(j.errors[k]).join(' ')).join('\n') : '';
+      why = [j.message, errs].filter(Boolean).join('\n');
+    } catch (e) { why = text.slice(0, 200); }
+    const err = new Error('HTTP ' + code + ' on ' + path + (why ? '\n\n' + why : ''));
+    err.code = code; throw err;
+  }
   return text ? JSON.parse(text) : {};
 }
 function readFile(p) { const s = $.NSString.stringWithContentsOfFileEncodingError(p, $.NSUTF8StringEncoding, null); return s.isNil() ? null : s.js; }
@@ -70,7 +80,7 @@ function parseDuration(txt) {                      // "1:30", "1.5", "90m", "45"
   txt = String(txt).trim().toLowerCase();
   let m;
   if ((m = txt.match(/^(\d+):(\d{1,2})$/))) return (+m[1]) * 3600 + (+m[2]) * 60;
-  if ((m = txt.match(/^(\d+(?:\.\d+)?)\s*h?$/))) { const v = +m[1]; return v > 12 ? v * 60 : v * 3600; }
+  if ((m = txt.match(/^(\d+\.?\d*|\.\d+)\s*h?$/))) { const v = +m[1]; return v > 12 ? v * 60 : v * 3600; }   // also ".25"
   if ((m = txt.match(/^(\d+)\s*m(in)?$/))) return (+m[1]) * 60;
   return null;
 }
@@ -128,6 +138,35 @@ function askText(prompt, title, def) {
   try { return app.displayDialog(prompt, { withTitle: title, defaultAnswer: def || '', buttons: ['Cancel', 'OK'], defaultButton: 'OK' }).textReturned.trim(); }
   catch (e) { return null; }
 }
+// Notes: a 3-line box where Return clicks OK (a native alert; falls back to a one-line box if that can't open)
+function askNotes(prompt, title, def) {
+  try { return notesAlert(prompt, title, def); }
+  catch (e) {
+    front();
+    try { return app.displayDialog(prompt, { withTitle: title, defaultAnswer: String(def || '').replace(/\s*\n+\s*/g, ' '), buttons: ['Cancel', 'OK'], defaultButton: 'OK' }).textReturned.trim(); }
+    catch (x) { return null; }
+  }
+}
+function notesAlert(prompt, title, def) {
+  const nsapp = $.NSApplication.sharedApplication;
+  front(); nsapp.activateIgnoringOtherApps(true);
+  const alert = $.NSAlert.alloc.init;
+  alert.setMessageText($(title || 'Notes'));
+  alert.setInformativeText($(prompt || ''));
+  alert.addButtonWithTitle($('OK'));          // first button = Return
+  alert.addButtonWithTitle($('Cancel'));      // second = Escape
+  const f = $.NSTextField.alloc.initWithFrame($.NSMakeRect(0, 0, 360, 58));   // ~3 lines; text wraps
+  f.setStringValue($(String(def || '').replace(/\s*\n+\s*/g, ' ')));
+  f.setPlaceholderString($('Notes'));
+  f.setUsesSingleLineMode(false);
+  f.cell.setWraps(true);
+  f.cell.setScrollable(false);
+  alert.setAccessoryView(f);
+  alert.window.setInitialFirstResponder(f);
+  const r = alert.runModal;
+  if (Number(r) !== 1000) return null;
+  return String(f.stringValue.js || '').trim();
+}
 function askDuration(def) {
   for (;;) {
     const t = askText('Time (e.g. 1:30, 1.5, 45m):', 'Time', def || '');
@@ -148,7 +187,7 @@ function newEntry(projectId, timer) {
   if (!p) throw new Error('Project not found — try Refresh projects');
   const label = (p.number ? p.number + ' · ' : '') + p.name;
   const type = chooseType(null, label); if (!type) return;
-  const notes = askText('Notes (optional):', type + ' · ' + label, ''); if (notes === null) return;
+  const notes = askNotes('Notes (optional):', type + ' · ' + label, ''); if (notes === null) return;
   const billable = NON_BILLABLE.indexOf(type) < 0;
   let entry;
   if (timer) { stopAll(); entry = [now(), 0, notes, billable]; }
@@ -169,13 +208,21 @@ function startTask(id) {                            // Harvest's "▶" on an exi
   const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
   stopAll();
   const l = logOf(t); const last = l[l.length - 1] || [];
-  l.push([now(), 0, last[2] || '', last.length > 3 ? last[3] : true]);
-  t.time_log = JSON.stringify(l); save(t);
+  const entry = [now(), 0, last[2] || '', last.length > 3 ? last[3] : true];
+  l.push(entry);
+  t.time_log = JSON.stringify(l);
+  try { save(t); }
+  catch (e) {
+    if (e.code !== 422) throw e;
+    // Invoice Ninja refused the change to this task (it validates the whole time log), so the timer
+    // starts as a new entry with the same project, type and notes — same as Harvest's ▶ on an old row.
+    api('POST', '/tasks', { client_id: t.client_id, project_id: t.project_id, rate: t.rate, description: t.description, time_log: JSON.stringify([entry]) });
+  }
 }
 function editNotes(id) {
   const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
   const d = split(t.description);
-  const notes = askText('Notes:', 'Edit notes', d.notes); if (notes === null) return;
+  const notes = askNotes('Notes:', 'Edit notes', d.notes); if (notes === null) return;
   t.description = joinDesc(d.type, notes);
   t.time_log = JSON.stringify(logOf(t).map(e => { e[2] = notes; return e; }));
   save(t);
@@ -268,7 +315,7 @@ function idlePrompt() {
 // ---------------- menu ----------------
 function menu(self) {
   const act = (args, extra) => ' | bash="' + self + '" ' + args.map((a, i) => 'param' + (i + 1) + '=' + a).join(' ') + ' terminal=false refresh=true' + (extra ? ' ' + extra : '');
-  const clean = s => String(s || '').replace(/\|/g, '/').replace(/[\r\n]+/g, ' ').trim();
+  const clean = s => String(s || '').replace(/\|/g, '/').replace(/\s*[\r\n]+\s*/g, ' · ').trim();
   const cut = (s, n) => { s = clean(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
   if (!token()) return 'Timer | sfimage=timer\n---\nAdd your API token in Terminal: | ' + GRAY + '\nsecurity add-generic-password -s invoiceninja-swiftbar -a "$USER" -w \'TOKEN\' | font=Menlo size=11';
@@ -290,7 +337,12 @@ function menu(self) {
 
   const out = [];
   // title
-  if (runningTask) { const r = rows.find(x => x.task === runningTask && x.running); out.push((r ? fmt(r.secs) : '') + '  ' + cut(projLabel(runningTask), 18) + ' | sfimage=timer color=#34C759'); }
+  if (runningTask) {
+    const r = rows.find(x => x.task === runningTask && x.running);
+    const label = (r ? fmt(r.secs) : '') + '  ' + cut(projLabel(runningTask), 18);
+    let png = null; try { png = pillImage(label); } catch (e) {}
+    out.push(png ? ' | image=' + png : label + ' | sfimage=timer color=#34C759');
+  }
   else out.push((todayK >= dayKey(ws) ? fmt(totalFor(todayK)) : '') + ' | sfimage=timer');
   out.push('---');
 
@@ -307,8 +359,14 @@ function menu(self) {
   const row = (r, depth) => {
     const pre = '--'.repeat(depth); const t = r.task; const d = split(t.description); const locked = !!t.invoice_id;
     const icon = r.running ? 'sfimage=stop.circle.fill color=#34C759' : locked ? 'sfimage=lock.fill' : 'sfimage=play.circle';
-    out.push(pre + fmt(r.secs).padStart(5, ' ') + '   ' + cut(projLabel(t), 14).padEnd(14, ' ') + '  ' + cut((d.type || 'Services') + (d.notes ? ' — ' + d.notes : ''), 44) +
-             ' | ' + MONO + ' ' + icon + ' tooltip="' + clean(projName(t) + (d.notes ? ' — ' + d.notes : '')).replace(/"/g, "'") + '"');
+    const line = pre + fmt(r.secs).padStart(5, ' ') + '   ' + cut(projLabel(t), 14).padEnd(14, ' ') + '  ' + cut((d.type || 'Services') + (d.notes ? ' — ' + d.notes : ''), 44);
+    const tip = clean(projName(t) + (d.notes ? ' — ' + d.notes : '')).replace(/"/g, "'");
+    if (r.running && !locked) {        // the running entry: one click stops it
+      out.push(line + act(['stop', t.id], MONO + ' ' + icon + ' tooltip="Click to stop the timer · ' + tip + '"'));
+      out.push(pre + '          Edit this entry | size=12 ' + GRAY + ' sfimage=ellipsis.circle');
+    } else if (locked) out.push(line + ' | href=' + BASE + '/tasks/' + t.id + '/edit ' + MONO + ' ' + icon + ' tooltip="Invoiced · ' + tip + '"');
+    // every row carries an action — SwiftBar greys out (and won't open) rows that have none
+    else out.push(line + act(['start', t.id], MONO + ' ' + icon + ' tooltip="Click ▶ to start · hover for options · ' + tip + '"'));
     const sub = pre + '--';
     out.push(sub + cut(projName(t), 60) + ' | ' + GRAY);
     if (d.notes) out.push(sub + cut(d.notes, 80) + ' | ' + GRAY + ' size=12');
@@ -368,6 +426,41 @@ function menu(self) {
   return out.filter((l, i) => !(l === '---' && out[i - 1] === '---')).join('\n');
 }
 
+// Menu bar title while timing: white text on a solid green pill (drawn as a small Retina image)
+function pillImage(text) {
+  let step = 'start';
+  try { return drawPill(text, s => { step = s; }); }
+  catch (e) { const msg = 'pill failed at "' + step + '": ' + e.message; try { writeFile(cacheDir + '/pill-error.txt', new Date().toISOString() + '  ' + msg + '\n'); } catch (x) {} throw new Error(msg); }
+}
+function drawPill(text, at) {
+  at('app');   $.NSApplication.sharedApplication;
+  const H = 22, PAD = 8, ICON = 14, GAP = 5;
+  at('font');  const white = $.NSColor.whiteColor;
+  const font = $.NSFont.monospacedDigitSystemFontOfSizeWeight(13, 0.3);
+  const attrs = $.NSDictionary.dictionaryWithObjectsForKeys($([font, white]), $([$.NSFontAttributeName, $.NSForegroundColorAttributeName]));
+  // plain NSString drawing (NSAttributedString's initializer isn't reachable from JXA on some macOS versions)
+  const ns = $.NSString.stringWithString(text);
+  at('measure'); const ts = ns.sizeWithAttributes(attrs);
+  const W = Math.ceil(PAD + ICON + GAP + ts.width + PAD);
+  at('bitmap'); const rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
+    null, W * 2, H * 2, 8, 4, true, false, $.NSCalibratedRGBColorSpace, 0, 0);
+  rep.setSize($.NSMakeSize(W, H));
+  at('context'); const ctx = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep);
+  $.NSGraphicsContext.saveGraphicsState;
+  $.NSGraphicsContext.setCurrentContext(ctx);
+  at('pill');  $.NSColor.colorWithSRGBRedGreenBlueAlpha(0.13, 0.63, 0.29, 1).setFill;          // #21A04A
+  $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(0, 1, W, H - 2), 5, 5).fill;
+  at('icon');  let sym = $.NSImage.imageWithSystemSymbolNameAccessibilityDescription('stopwatch', 'Timer');   // a real string: null arrives as NSNull
+  if (sym && !sym.isNil()) try {
+    try { sym = sym.imageWithSymbolConfiguration($.NSImageSymbolConfiguration.configurationWithPaletteColors($([white]))); } catch (e) {}
+    sym.drawInRectFromRectOperationFraction($.NSMakeRect(PAD, (H - ICON) / 2, ICON, ICON), $.NSMakeRect(0, 0, 0, 0), 2, 1);
+  } catch (e) {}
+  at('text');  ns.drawAtPointWithAttributes($.NSMakePoint(PAD + ICON + GAP, (H - ts.height) / 2), attrs);
+  $.NSGraphicsContext.restoreGraphicsState;
+  at('png');   const png = rep.representationUsingTypeProperties(4, $.NSDictionary.dictionary);
+  return png.base64EncodedStringWithOptions(0).js;
+}
+
 function run(argv) {
   const self = argv[0], cmd = argv[1], a = argv[2], b = argv[3];
   try {
@@ -384,9 +477,16 @@ function run(argv) {
       case 'week':    state({ week: +a || 0 }); return '';
       case 'refresh': projects(true);     return '';
       case 'idle':    idlePrompt();       return '';
+      case 'pilltest': {                    // Terminal: ./invoiceninja.10s.sh pilltest
+        const b64 = pillImage('0:03  FERM-2026');
+        const f = $.NSHomeDirectory().js + '/Desktop/pill-test.png';
+        $.NSData.alloc.initWithBase64EncodedStringOptions($(b64), 0).writeToFileAtomically(f, true);
+        return 'OK — drew the pill (' + b64.length + ' chars). Saved ' + f;
+      }
       default:        return menu(self);
     }
   } catch (e) {
+    if (cmd === 'pilltest') return 'FAILED — ' + e.message;
     if (cmd) { front(); app.displayAlert('Invoice Ninja timer', { message: e.message }); return ''; }
     return '⚠ | sfimage=exclamationmark.triangle\n---\n' + e.message;
   }
