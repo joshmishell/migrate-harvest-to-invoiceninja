@@ -65,8 +65,8 @@ Every script that writes has a **dry run** by default and needs `--live` to chan
 Each tool carries its own version number in its header (`@version` in the browser script, `xbar.version` in the timer,
 `vX.Y` in the first comment of a server script). What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
-Every release is also tagged `<tool>-v<version>` — e.g. `browser-v3.7`, `timer-v2.8`, `digest-v1.2` — so you can
-download any earlier version from the repo's **Tags** page and roll back by installing it the same way you installed the update.
+Every version is a commit, so earlier versions are always one click away: open the file on GitHub → **History**,
+pick the version, and use **Raw** to download it. Rolling back is installing that older file the same way you'd install an update.
 
 To update: replace the browser script in Tampermonkey (select all, paste, save); copy the timer over your existing
 `*.10s.sh` plugin file (keep one copy in SwiftBar's folder); upload server scripts over the old ones under the **same file
