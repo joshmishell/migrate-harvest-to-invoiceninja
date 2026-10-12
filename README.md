@@ -6,6 +6,30 @@ Built and used for a real one-person studio migration of ~15 years of data: 136 
 
 **Start here → [GUIDE.md](GUIDE.md)**. Using Claude? Point it at [skill/harvest-to-invoice-ninja/SKILL.md](skill/harvest-to-invoice-ninja/SKILL.md) and it will walk you through the whole thing.
 
+## What's new
+
+**Current versions:** browser script **3.7** · menu bar timer **2.10** · morning email **1.2** · auto-numbering **1.1** · project dates **1.0**.
+Full history per tool: [CHANGELOG.md](CHANGELOG.md).
+
+**Menu bar timer**
+- **2.10:** **Edit date…** on every entry. Move a day's time to another date from a calendar.
+- **2.9:** **Add time manually** opens one box with a calendar (any date, including past weeks) and the time field.
+- **2.8:** 3-line notes box where Return = OK. Times can be typed as `.25`, `1.5`, `1:30`, `45` (minutes) or `90m`.
+- **2.6–2.7:** Solid green pill in the menu bar while timing. Click the running entry to stop it. Every entry row opens its options.
+
+**Browser script**
+- **3.7:** Rounding with a 5-minute grace. Each time entry rounds *down* to the quarter hour when it's 5 minutes or less past one, otherwise up; under 5 minutes bills 0:15.
+- **3.5–3.6:** On **New Project**, Client comes first and a Project Number field fills in the client's next code. A sortable **See all projects** popup lists every project for that client. Duplicate project numbers are blocked.
+- **3.0–3.4:** **To-do list** in the sidebar: by project or one Focus list, drag to prioritize, due dates, waiting-on-client, done/clear, trash with restore, and a timer from any to-do.
+- **2.4:** Draft invoices are numbered from their project (`ACME-1035`, then `b`, `c`…). The Tasks pages show the client and link the project.
+
+**Server scripts**
+- **New `todo_digest.php`:** an 8:30am weekday email with to-dos and invoice status.
+- **New `set_project_dates.php`:** gives imported projects their real created dates.
+- **`auto_numbers.php` 1.1:** deleted invoices count when picking the next letter.
+
+**Updating from an earlier version:** replace the browser script in Tampermonkey and copy the timer over your existing plugin file. Upload server scripts under the same names. For the To-do list, add two task custom fields first: **Due** (Date) and **To-do rank** (Single line text). See [GUIDE.md](GUIDE.md) Phase 7.
+
 ## What you get
 
 | | |
