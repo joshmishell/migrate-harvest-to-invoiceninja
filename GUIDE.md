@@ -337,7 +337,7 @@ An 8:30am weekday email with to-dos overdue / due today / this week / up next, i
 3. Set `BASE` at the top of the file to your address, and edit `TYPES` to your task types.
 4. Drop the file in SwiftBar's plugins folder and run `chmod +x` on it.
 
-It gives you a week timesheet with daily totals, start/stop (click the running entry to stop it), editing of notes, time, type and project, deleting entries, adding time manually (`1:30`, `1.5`, `.25`, `45`, `90m`), a solid green pill in the menu bar while timing, and an idle/sleep prompt after 10 minutes (`IDLE_MIN`). If the pill doesn't appear, run `./invoiceninja-timer.10s.sh pilltest` in Terminal; it says which drawing step failed. Time saved as "Type — notes" is grouped by the **Invoice unbilled time** button.
+It gives you a week timesheet with daily totals, start/stop (click the running entry to stop it), editing of notes, time, type and project, deleting entries, adding time manually on any date from a calendar (`1:30`, `1.5`, `.25`, `45`, `90m`), a solid green pill in the menu bar while timing, and an idle/sleep prompt after 10 minutes (`IDLE_MIN`). If the pill doesn't appear, run `./invoiceninja-timer.10s.sh pilltest` in Terminal; it says which drawing step failed. Time saved as "Type — notes" is grouped by the **Invoice unbilled time** button.
 
 **On a phone,** open your billing address in Safari, use **Share → Add to Home Screen**, and use the web app's timer.
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # <xbar.title>Invoice Ninja timer</xbar.title>
-# <xbar.version>2.8</xbar.version>
+# <xbar.version>2.9</xbar.version>
 # <xbar.author>migrate-harvest-to-invoiceninja</xbar.author>
 # <xbar.desc>Harvest-style week timesheet + timer for self-hosted Invoice Ninja.</xbar.desc>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -167,6 +167,49 @@ function notesAlert(prompt, title, def) {
   if (Number(r) !== 1000) return null;
   return String(f.stringValue.js || '').trim();
 }
+// Add time manually: one box with a calendar (any date) and the time field. Return = OK.
+function askTimeAndDay(title, defDay) {
+  let typed = '';
+  for (;;) {
+    const nsapp = $.NSApplication.sharedApplication;
+    front(); nsapp.activateIgnoringOtherApps(true);
+    const alert = $.NSAlert.alloc.init;
+    alert.setMessageText($(title || 'Add time'));
+    alert.setInformativeText($('Pick the day, then enter the time (1:30, 1.5, .25, 45, 90m).'));
+    alert.addButtonWithTitle($('Add'));
+    alert.addButtonWithTitle($('Cancel'));
+    const cal = $.NSDatePicker.alloc.initWithFrame($.NSMakeRect(0, 0, 10, 10));
+    cal.setDatePickerStyle(1);                 // graphical calendar
+    cal.setDatePickerElements(0x00e0);         // year, month, day
+    cal.setDateValue($.NSDate.dateWithTimeIntervalSince1970(defDay.getTime() / 1000 + 12 * 3600));
+    cal.sizeToFit;
+    const cw = cal.frame.size.width, ch = cal.frame.size.height;
+    const W = Math.max(260, cw), FH = 24, GAP = 10;
+    const box = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, W, ch + GAP + FH));
+    cal.setFrameOrigin($.NSMakePoint(Math.round((W - cw) / 2), FH + GAP));
+    const f = $.NSTextField.alloc.initWithFrame($.NSMakeRect(0, 0, W, FH));
+    f.setPlaceholderString($('Time, e.g. 1:30 or .25'));
+    if (typed) f.setStringValue($(typed));
+    box.addSubview(cal); box.addSubview(f);
+    alert.setAccessoryView(box);
+    alert.window.setInitialFirstResponder(f);
+    if (Number(alert.runModal) !== 1000) return null;
+    typed = String(f.stringValue.js || '').trim();
+    const secs = parseDuration(typed);
+    if (secs !== null && secs > 0) return { secs, day: new Date(cal.dateValue.timeIntervalSince1970 * 1000) };
+    front(); app.displayAlert('Couldn\'t read "' + typed + '" as a time.');
+  }
+}
+// Fallback if the calendar box can't open: time, then a list of the last 14 days
+function askTimeAndDayList(defDay) {
+  const secs = askDuration(''); if (!secs) return null;
+  const days = []; for (let i = 0; i < 14; i++) days.push(new Date(startOfDay(new Date()).getTime() - i * DAY));
+  const labels = days.map(dayLabel); const want = dayLabel(startOfDay(defDay));
+  front();
+  const pick = app.chooseFromList(labels, { withTitle: 'Day', withPrompt: 'Which day?', defaultItems: [labels.indexOf(want) >= 0 ? want : labels[0]] });
+  if (!pick) return null;
+  return { secs, day: days[labels.indexOf(pick[0])] };
+}
 function askDuration(def) {
   for (;;) {
     const t = askText('Time (e.g. 1:30, 1.5, 45m):', 'Time', def || '');
@@ -192,15 +235,14 @@ function newEntry(projectId, timer) {
   let entry;
   if (timer) { stopAll(); entry = [now(), 0, notes, billable]; }
   else {
-    const secs = askDuration(''); if (!secs) return;
-    const ws = weekStart(state().week || 0);
-    const days = []; for (let i = 0; i < 7; i++) days.push(new Date(ws.getTime() + i * DAY));
-    const labels = days.map(dayLabel); const todayLbl = dayLabel(startOfDay(new Date()));
-    front();
-    const pick = app.chooseFromList(labels, { withTitle: 'Day', withPrompt: 'Which day?', defaultItems: [labels.indexOf(todayLbl) >= 0 ? todayLbl : labels[0]] });
-    if (!pick) return;
-    const d = days[labels.indexOf(pick[0])]; const start = Math.floor(d.getTime() / 1000) + 9 * 3600;
-    entry = [start, start + secs, notes, billable];
+    // default day: today, or the same weekday in the week you're looking at
+    const off = state().week || 0;
+    const def = new Date(startOfDay(new Date()).getTime() + off * 7 * DAY);
+    let picked = null;
+    try { picked = askTimeAndDay(type + ' · ' + label, def); } catch (e) { picked = askTimeAndDayList(def); }
+    if (!picked) return;
+    const start = Math.floor(startOfDay(picked.day).getTime() / 1000) + 9 * 3600;   // entries start at 9:00 that day
+    entry = [start, start + picked.secs, notes, billable];
   }
   api('POST', '/tasks', { client_id: p.client_id, project_id: p.id, rate: p.rate, description: joinDesc(type, notes), time_log: JSON.stringify([entry]) });
 }
@@ -477,6 +519,10 @@ function run(argv) {
       case 'week':    state({ week: +a || 0 }); return '';
       case 'refresh': projects(true);     return '';
       case 'idle':    idlePrompt();       return '';
+      case 'caltest': {                     // Terminal: ./invoiceninja.10s.sh caltest
+        const r = askTimeAndDay('Calendar test', new Date());
+        return r ? 'OK — ' + r.secs / 3600 + 'h on ' + r.day.toDateString() : 'Cancelled';
+      }
       case 'pilltest': {                    // Terminal: ./invoiceninja.10s.sh pilltest
         const b64 = pillImage('0:03  FERM-2026');
         const f = $.NSHomeDirectory().js + '/Desktop/pill-test.png';
@@ -486,7 +532,7 @@ function run(argv) {
       default:        return menu(self);
     }
   } catch (e) {
-    if (cmd === 'pilltest') return 'FAILED — ' + e.message;
+    if (cmd === 'pilltest' || cmd === 'caltest') return 'FAILED — ' + e.message;
     if (cmd) { front(); app.displayAlert('Invoice Ninja timer', { message: e.message }); return ''; }
     return '⚠ | sfimage=exclamationmark.triangle\n---\n' + e.message;
   }
