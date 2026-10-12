@@ -1,6 +1,6 @@
 #!/bin/bash
 # <xbar.title>Invoice Ninja timer</xbar.title>
-# <xbar.version>2.9</xbar.version>
+# <xbar.version>2.10</xbar.version>
 # <xbar.author>migrate-harvest-to-invoiceninja</xbar.author>
 # <xbar.desc>Harvest-style week timesheet + timer for self-hosted Invoice Ninja.</xbar.desc>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
@@ -290,6 +290,57 @@ function editTime(id, day) {                        // set that day's total, lik
   keep.sort((a, b) => a[0] - b[0]);
   t.time_log = JSON.stringify(keep); save(t);
 }
+// Move that day's time on this entry to another date (times of day and durations stay the same)
+function editDate(id, day) {
+  const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
+  const l = logOf(t); const idx = [];
+  l.forEach((e, i) => { if (dayKey(e[0] * 1000) === day) idx.push(i); });
+  if (!idx.length) return;
+  if (idx.some(i => !l[i][1])) { front(); app.displayAlert('Stop the timer before changing its date.'); return; }
+  const cur = new Date(l[idx[0]][0] * 1000);
+  let to = null;
+  try { to = askDay('Move to which date?', cur); } catch (e) { to = askDayList(cur); }
+  if (!to || dayKey(to.getTime()) === day) return;
+  idx.forEach(i => {
+    const e = l[i], len = e[1] - e[0], d = new Date(e[0] * 1000);
+    d.setFullYear(to.getFullYear(), to.getMonth(), to.getDate());
+    e[0] = Math.floor(d.getTime() / 1000); e[1] = e[0] + len;
+  });
+  const moved = idx.map(i => l[i].slice());
+  l.sort((a, b) => a[0] - b[0]);
+  t.time_log = JSON.stringify(l);
+  try { save(t); }
+  catch (e) {
+    if (e.code !== 422) throw e;
+    // Invoice Ninja refused the moved block on this task (overlap): move it to its own entry instead
+    const rest = logOf(api('GET', '/tasks/' + id).data).filter(x => dayKey(x[0] * 1000) !== day);
+    api('POST', '/tasks', { client_id: t.client_id, project_id: t.project_id, rate: t.rate, description: t.description, time_log: JSON.stringify(moved) });
+    const t2 = api('GET', '/tasks/' + id).data;
+    if (rest.length) { t2.time_log = JSON.stringify(rest); save(t2); } else api('POST', '/tasks/bulk', { action: 'delete', ids: [id] });
+  }
+}
+function askDay(title, defDay) {
+  const nsapp = $.NSApplication.sharedApplication;
+  front(); nsapp.activateIgnoringOtherApps(true);
+  const alert = $.NSAlert.alloc.init;
+  alert.setMessageText($(title || 'Date'));
+  alert.addButtonWithTitle($('Move'));
+  alert.addButtonWithTitle($('Cancel'));
+  const cal = $.NSDatePicker.alloc.initWithFrame($.NSMakeRect(0, 0, 10, 10));
+  cal.setDatePickerStyle(1); cal.setDatePickerElements(0x00e0);
+  cal.setDateValue($.NSDate.dateWithTimeIntervalSince1970(startOfDay(defDay).getTime() / 1000 + 12 * 3600));
+  cal.sizeToFit;
+  alert.setAccessoryView(cal);
+  if (Number(alert.runModal) !== 1000) return null;
+  return new Date(cal.dateValue.timeIntervalSince1970 * 1000);
+}
+function askDayList(defDay) {
+  const days = []; for (let i = -7; i < 21; i++) days.push(new Date(startOfDay(new Date()).getTime() - i * DAY));
+  const labels = days.map(dayLabel); const want = dayLabel(startOfDay(defDay));
+  front();
+  const pick = app.chooseFromList(labels, { withTitle: 'Date', withPrompt: 'Move to which date?', defaultItems: [labels.indexOf(want) >= 0 ? want : labels[7]] });
+  return pick ? days[labels.indexOf(pick[0])] : null;
+}
 function moveProject(id) {
   const t = api('GET', '/tasks/' + id).data; if (guardInvoiced(t)) return;
   const ps = projects(); const labels = ps.map(p => p.client + ' — ' + (p.number ? p.number + ' ' : '') + p.name);
@@ -419,6 +470,7 @@ function menu(self) {
       else out.push(sub + 'Start timer' + act(['start', t.id], 'sfimage=play.fill'));
       out.push(sub + 'Edit notes…' + act(['notes', t.id], 'sfimage=square.and.pencil'));
       out.push(sub + 'Edit time…' + act(['time', t.id, r.day], 'sfimage=clock'));
+      out.push(sub + 'Edit date…' + act(['date', t.id, r.day], 'sfimage=calendar'));
       out.push(sub + 'Change task type…' + act(['type', t.id], 'sfimage=tag'));
       out.push(sub + 'Move to project…' + act(['move', t.id], 'sfimage=folder'));
       out.push(sub + '---');
@@ -513,6 +565,7 @@ function run(argv) {
       case 'stop':    stopTask(api('GET', '/tasks/' + a).data); return '';
       case 'notes':   editNotes(a);       return '';
       case 'time':    editTime(a, b);     return '';
+      case 'date':    editDate(a, b);     return '';
       case 'type':    editType(a);        return '';
       case 'move':    moveProject(a);     return '';
       case 'delete':  deleteDay(a, b);    return '';

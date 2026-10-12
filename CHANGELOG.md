@@ -17,6 +17,7 @@ Each tool is versioned on its own. To get an earlier version, open the file on G
 
 ## Menu bar timer — `tools/invoiceninja-timer.10s.sh`
 
+- **2.10** "Edit date…" on every entry: move that day's time to another date from a calendar.
 - **2.9** Add time manually: one box with a calendar (any date, including past weeks) and the time field; Return = Add. `caltest` checks it from Terminal.
 - **2.8** Notes box is a 3-line native box where Return = OK. Manual time accepts `.25`, `1:30`, `45`, `90m`.
 - **2.7** Entry rows are clickable (start / open), so they no longer appear greyed out.
